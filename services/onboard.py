@@ -118,10 +118,12 @@ async def handle_onboard(db, data):
     n_scenarios = len(data.get("scenarios", []))
     n_indicators = len(data.get("indicators", []))
     n_events = len(data.get("key_events", []))
+    currency_symbols = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"}
+    currency_sym = currency_symbols.get(company_data.get("currency", "USD"), "$")
     summary = (
         f"Initiated coverage on {company_data['name']}. "
         f"Rating: {company_data['current_rating']}. "
-        f"PT: ${company_data['blended_price_target']:.2f}. "
+        f"PT: {currency_sym}{company_data['blended_price_target']:.2f}. "
         f"{n_scenarios} scenarios, {n_indicators} indicators, {n_events} key events."
     )
 

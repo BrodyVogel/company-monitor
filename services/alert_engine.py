@@ -312,6 +312,7 @@ async def run_alerts(db, company_id):
                 )
 
     # 5. Overdue key events
+    now = datetime.utcnow()
     key_events = await db.execute_fetchall(
         "SELECT * FROM key_events WHERE company_id = ? AND occurred = 0",
         (company_id,),
@@ -344,7 +345,6 @@ async def run_alerts(db, company_id):
         )
 
     # 6. Staleness checks — create or clear
-    now = datetime.utcnow()
 
     sweep_overdue_title = f"Sweep overdue for {company['name']}"
     if company["last_sweep_at"]:
