@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 from database import init_db
 from routers.api import router as api_router
@@ -11,7 +13,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Coverage Monitor", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 app.include_router(api_router)
+
+
+@app.get("/")
+async def dashboard(request: Request):
+    return templates.TemplateResponse("dashboard.html", {"request": request})
 
 
 if __name__ == "__main__":
