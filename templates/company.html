@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ ticker }} — Coverage Monitor{% endblock %}
+
+{% block content %}
+<div id="company-page" data-ticker="{{ ticker }}">
+    <div id="loading" class="text-center py-12 text-gray-500">Loading...</div>
+    <div id="company-content" class="hidden">
+        <!-- Header -->
+        <div id="header-section" class="mb-6"></div>
+
+        <!-- Price Cards -->
+        <div id="price-cards" class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6"></div>
+
+        <!-- Active Alerts -->
+        <div id="alerts-section" class="mb-6 hidden"></div>
+
+        <!-- Scenarios -->
+        <div id="scenarios-section" class="mb-6"></div>
+
+        <!-- Indicators -->
+        <div id="indicators-section" class="mb-6"></div>
+
+        <!-- Key Events -->
+        <div id="events-section" class="mb-6"></div>
+
+        <!-- Change Log -->
+        <div id="changelog-section" class="mb-6"></div>
+
+        <!-- Delete -->
+        <div class="mt-12 mb-8 text-center">
+            <button id="delete-btn" class="text-red-500 hover:text-red-700 text-sm underline">Delete Company</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2"></div>
+
+<!-- Import file input (hidden) -->
+<input type="file" id="file-input" accept=".json" class="hidden">
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/company.js"></script>
+{% endblock %}

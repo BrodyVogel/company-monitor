@@ -23,6 +23,11 @@ async def dashboard(request: Request):
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
 
+@app.get("/company/{ticker}")
+async def company_detail(request: Request, ticker: str):
+    return templates.TemplateResponse("company.html", {"request": request, "ticker": ticker})
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

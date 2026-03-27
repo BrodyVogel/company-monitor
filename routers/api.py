@@ -131,6 +131,43 @@ async def get_company(ticker: str):
         await db.close()
 
 
+@router.get("/indicators/{indicator_id}/readings")
+async def get_indicator_readings(indicator_id: int):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT id FROM indicators WHERE id = ?", (indicator_id,)
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Indicator not found.")
+        readings = [
+            dict(r) for r in await db.execute_fetchall(
+                "SELECT * FROM indicator_readings WHERE indicator_id = ? ORDER BY sweep_date DESC",
+                (indicator_id,),
+            )
+        ]
+        return readings
+    finally:
+        await db.close()
+
+
+@router.delete("/companies/{ticker}")
+async def delete_company(ticker: str):
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT id FROM companies WHERE ticker = ?", (ticker,)
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
+        company_id = rows[0]["id"]
+        await db.execute("DELETE FROM companies WHERE id = ?", (company_id,))
+        await db.commit()
+        return {"status": "ok", "deleted": ticker}
+    finally:
+        await db.close()
+
+
 @router.put("/alerts/{alert_id}/acknowledge")
 async def acknowledge_alert(alert_id: int):
     db = await get_db()
