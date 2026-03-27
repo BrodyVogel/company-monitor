@@ -212,14 +212,24 @@ function setupImport() {
                 method: "POST",
                 body: formData,
             });
-            const data = await res.json();
+            let data;
+            try {
+                data = await res.json();
+            } catch (parseErr) {
+                console.error("Failed to parse import response:", parseErr);
+                showToast(res.ok ? "Import successful" : `Import failed (status ${res.status})`, res.ok ? "success" : "error");
+                fileInput.value = "";
+                setTimeout(loadDashboard, 2000);
+                return;
+            }
             if (res.ok) {
                 const summary = data.summary || "Import successful";
                 showToast(summary, "success");
             } else {
                 showToast(data.detail || "Import failed", "error");
             }
-        } catch {
+        } catch (err) {
+            console.error("Import network error:", err);
             showToast("Import failed — network error", "error");
         }
 
