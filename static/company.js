@@ -512,8 +512,8 @@ function renderChangeLog() {
     const log = DATA.change_log;
     if (!log || log.length === 0) return;
 
-    // Find most recent non-undone entry
-    const latestActive = log.find(e => !e.is_undone);
+    // Find most recent non-undone entry (excluding undo entries themselves)
+    const latestActive = log.find(e => !e.is_undone && e.action !== "undo");
 
     let html = '<h2 class="text-lg font-semibold text-gray-900 mb-3">Change Log</h2>';
     for (const entry of log) {
@@ -523,6 +523,7 @@ function renderChangeLog() {
         const badgeClass = actionColors[entry.action] || "bg-gray-100 text-gray-700";
 
         const isLatest = latestActive && entry.id === latestActive.id;
+        const strikethrough = isUndone ? "line-through" : "";
 
         html += `
         <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-3 ${opacity}">
@@ -534,10 +535,10 @@ function renderChangeLog() {
                 </div>
                 <div class="flex items-center gap-2">
                     <button onclick="toggleDetails(${entry.id})" class="text-xs text-blue-600 hover:underline">Expand</button>
-                    ${isLatest && !isUndone ? `<button onclick="undoChange(${entry.id})" class="text-xs text-red-500 hover:underline">Undo</button>` : ""}
+                    ${isLatest && !isUndone && entry.action !== "undo" ? `<button onclick="undoChange(${entry.id})" class="text-xs text-red-500 hover:underline">Undo</button>` : ""}
                 </div>
             </div>
-            <p class="text-sm text-gray-700 mt-1">${escapeHtml(entry.summary)}</p>
+            <p class="text-sm text-gray-700 mt-1" style="text-decoration: ${strikethrough}">${escapeHtml(entry.summary)}</p>
             <div id="details-${entry.id}" class="hidden mt-2">
                 <pre class="text-xs bg-gray-50 p-3 rounded overflow-x-auto text-gray-600">${escapeHtml(formatDetails(entry.details))}</pre>
             </div>

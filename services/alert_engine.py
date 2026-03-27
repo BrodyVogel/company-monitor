@@ -145,12 +145,40 @@ async def run_alerts(db, company_id):
         return
     company = dict(company[0])
 
+    # 0. Cleanup: deactivate orphaned alerts
+    # Deactivate alerts whose indicator no longer exists
+    await db.execute(
+        """UPDATE alerts SET is_active = 0
+           WHERE company_id = ? AND is_active = 1
+           AND indicator_id IS NOT NULL
+           AND indicator_id NOT IN (SELECT id FROM indicators)""",
+        (company_id,),
+    )
+    # Deactivate duplicate alerts (same company, same title, both active — keep most recent)
+    await db.execute(
+        """UPDATE alerts SET is_active = 0
+           WHERE company_id = ? AND is_active = 1
+           AND id NOT IN (
+               SELECT MAX(id) FROM alerts
+               WHERE company_id = ? AND is_active = 1
+               GROUP BY title
+           )""",
+        (company_id, company_id),
+    )
+
     # 1. Rating divergence — create or clear
     suggested = compute_suggested_rating(
         company["current_price"], company["blended_price_target"]
     )
     div = rating_divergence(company["current_rating"], suggested)
     if div:
+        # Deactivate ALL existing rating-related alerts first to prevent duplicates
+        await db.execute(
+            """UPDATE alerts SET is_active = 0
+               WHERE company_id = ? AND is_active = 1
+               AND (title LIKE '%rating%' OR title LIKE '%Rating%')""",
+            (company_id,),
+        )
         await _upsert_alert(
             db,
             company_id,
