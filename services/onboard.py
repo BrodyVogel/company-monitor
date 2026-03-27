@@ -15,7 +15,7 @@ async def handle_onboard(db, data):
         return {"error": f"Company with ticker {ticker} already exists."}
 
     # Insert company
-    today = date.today().isoformat()
+    materials_as_of = company_data.get("materials_date") or date.today().isoformat()
     cursor = await db.execute(
         """INSERT INTO companies (name, ticker, exchange, currency, current_rating,
            current_price, blended_price_target, materials_as_of)
@@ -28,7 +28,7 @@ async def handle_onboard(db, data):
             company_data["current_rating"],
             company_data.get("current_price"),
             company_data["blended_price_target"],
-            today,
+            materials_as_of,
         ),
     )
     company_id = cursor.lastrowid
@@ -91,7 +91,7 @@ async def handle_onboard(db, data):
         await db.execute(
             """INSERT INTO price_history (company_id, price, source, recorded_at)
                VALUES (?, ?, ?, ?)""",
-            (company_id, company_data["current_price"], "onboard", today),
+            (company_id, company_data["current_price"], "onboard", materials_as_of),
         )
 
     await db.commit()
