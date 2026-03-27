@@ -250,7 +250,8 @@ async def undo_change(change_log_id: int):
     try:
         result = await handle_undo(db, change_log_id)
         if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
+            status = 404 if "not found" in result["error"].lower() else 400
+            raise HTTPException(status_code=status, detail=result["error"])
         return result
     finally:
         await db.close()

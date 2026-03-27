@@ -140,6 +140,12 @@ async def handle_update(db, data):
         if not existing:
             indicators_unmatched.append(name_stripped)
             continue
+        # Deactivate alerts referencing this indicator before deleting it
+        for row in existing:
+            await db.execute(
+                "UPDATE alerts SET is_active = 0 WHERE indicator_id = ? AND is_active = 1",
+                (row["id"],),
+            )
         await db.execute(
             "DELETE FROM indicators WHERE company_id = ? AND LOWER(TRIM(name)) = LOWER(?)",
             (company_id, name_stripped),
