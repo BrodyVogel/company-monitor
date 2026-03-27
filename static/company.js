@@ -99,6 +99,7 @@ function renderAll() {
     renderScenarios();
     renderIndicators();
     renderKeyEvents();
+    renderDiscoveries();
     renderChangeLog();
 }
 
@@ -380,6 +381,130 @@ function renderKeyEvents() {
                 <tbody class="divide-y divide-gray-100">${rows}</tbody>
             </table>
         </div>`;
+}
+
+// ── Pending Discoveries ──
+function renderDiscoveries() {
+    const section = document.getElementById("discoveries-section");
+    // Find the most recent sweep change_log entry
+    const sweepEntry = DATA.change_log.find(e => e.action === "sweep" && !e.is_undone);
+    if (!sweepEntry) { section.classList.add("hidden"); return; }
+
+    const details = safeParse(sweepEntry.details);
+    if (!details) { section.classList.add("hidden"); return; }
+
+    const discovered = (details.events && details.events.discovered) || [];
+    const pending = details.pending_discoveries || {};
+    const pendingEvents = pending.pending_events || [];
+    const suggestedIndicators = pending.suggested_indicators || [];
+
+    const allItems = [...discovered];
+    if (allItems.length === 0 && pendingEvents.length === 0 && suggestedIndicators.length === 0) {
+        section.classList.add("hidden");
+        return;
+    }
+
+    // Merge: use discovered list, but also include pending_events/suggested_indicators if not already there
+    const itemMap = new Map();
+    for (const item of allItems) {
+        itemMap.set((item.event || item.name || "").toLowerCase(), item);
+    }
+    for (const item of pendingEvents) {
+        const key = (item.event || item.name || "").toLowerCase();
+        if (!itemMap.has(key)) { itemMap.set(key, item); allItems.push(item); }
+    }
+    for (const item of suggestedIndicators) {
+        const key = (item.event || item.name || "").toLowerCase();
+        if (!itemMap.has(key)) { itemMap.set(key, item); allItems.push(item); }
+    }
+
+    if (allItems.length === 0) { section.classList.add("hidden"); return; }
+    section.classList.remove("hidden");
+
+    let html = '<h2 class="text-lg font-semibold text-gray-900 mb-3">Pending Discoveries</h2>';
+
+    for (let i = 0; i < allItems.length; i++) {
+        const item = allItems[i];
+        const eventName = escapeHtml(item.event || item.name || "Unknown");
+        const date = item.date ? formatFullDate(item.date) : "\u2014";
+        const relevance = escapeHtml(item.relevance || "");
+        const materialFlag = item.material_change
+            ? '<span class="inline-block bg-red-100 text-red-700 text-xs font-medium px-2 py-0.5 rounded ml-2">Material Change</span>'
+            : '';
+
+        let buttons = '';
+        if (item.add_to_tracked_events) {
+            const evData = item.add_to_tracked_events;
+            buttons += `<button onclick='addDiscoveredEvent(${JSON.stringify(evData).replace(/'/g, "&#39;")})' class="bg-blue-600 text-white text-xs px-3 py-1 rounded hover:bg-blue-700 mr-2">Add to Tracked Events</button>`;
+        }
+        if (item.suggested_indicator) {
+            const indData = item.suggested_indicator;
+            buttons += `<button onclick='addDiscoveredIndicator(${JSON.stringify(indData).replace(/'/g, "&#39;")})' class="bg-green-600 text-white text-xs px-3 py-1 rounded hover:bg-green-700">Add Indicator</button>`;
+        }
+
+        html += `
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 border-l-4 border-l-purple-400 p-4 mb-3">
+            <div class="flex items-start justify-between">
+                <div class="flex-1">
+                    <div class="flex items-center mb-1">
+                        <span class="font-medium text-sm text-gray-900">${eventName}</span>
+                        ${materialFlag}
+                    </div>
+                    <p class="text-xs text-gray-500">Date: ${date}</p>
+                    ${relevance ? `<p class="text-sm text-gray-600 mt-1">${relevance}</p>` : ""}
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0 ml-4">${buttons}</div>
+            </div>
+        </div>`;
+    }
+
+    section.innerHTML = html;
+}
+
+async function addDiscoveredEvent(evData) {
+    try {
+        const body = {
+            event: evData.event || evData.name,
+            expected_date: evData.expected_date || null,
+            why_it_matters: evData.why_it_matters || null,
+            indicators_affected: evData.indicators_affected || [],
+        };
+        const res = await fetch(`/api/companies/${encodeURIComponent(TICKER)}/key-events`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (res.ok) {
+            showToast("Event added", "success");
+            await loadCompany();
+        } else {
+            showToast("Failed to add event", "error");
+        }
+    } catch { showToast("Failed to add event", "error"); }
+}
+
+async function addDiscoveredIndicator(indData) {
+    try {
+        const body = {
+            name: indData.name,
+            current_value: indData.current_value || null,
+            bear_threshold: indData.bear_threshold || null,
+            bull_threshold: indData.bull_threshold || null,
+            check_frequency: indData.check_frequency || "Weekly",
+            data_source: indData.data_source || "",
+        };
+        const res = await fetch(`/api/companies/${encodeURIComponent(TICKER)}/indicators`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        if (res.ok) {
+            showToast("Indicator added", "success");
+            await loadCompany();
+        } else {
+            showToast("Failed to add indicator", "error");
+        }
+    } catch { showToast("Failed to add indicator", "error"); }
 }
 
 // ── Change Log ──

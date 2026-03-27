@@ -168,6 +168,63 @@ async def delete_company(ticker: str):
         await db.close()
 
 
+@router.post("/companies/{ticker}/key-events")
+async def create_key_event(ticker: str, request: Request):
+    data = await request.json()
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT id FROM companies WHERE ticker = ?", (ticker,)
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
+        company_id = rows[0]["id"]
+        indicators_affected = data.get("indicators_affected")
+        if isinstance(indicators_affected, list):
+            indicators_affected = json.dumps(indicators_affected)
+        await db.execute(
+            """INSERT INTO key_events (company_id, event, expected_date, why_it_matters,
+               indicators_affected)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                company_id, data["event"], data.get("expected_date"),
+                data.get("why_it_matters"), indicators_affected,
+            ),
+        )
+        await db.commit()
+        return {"status": "ok", "event": data["event"]}
+    finally:
+        await db.close()
+
+
+@router.post("/companies/{ticker}/indicators")
+async def create_indicator(ticker: str, request: Request):
+    data = await request.json()
+    db = await get_db()
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT id FROM companies WHERE ticker = ?", (ticker,)
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
+        company_id = rows[0]["id"]
+        await db.execute(
+            """INSERT INTO indicators (company_id, name, current_value, current_value_numeric,
+               bear_threshold, bull_threshold, check_frequency, data_source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                company_id, data["name"], data.get("current_value"),
+                data.get("current_value_numeric"), data.get("bear_threshold"),
+                data.get("bull_threshold"), data.get("check_frequency", "Weekly"),
+                data.get("data_source", ""),
+            ),
+        )
+        await db.commit()
+        return {"status": "ok", "indicator": data["name"]}
+    finally:
+        await db.close()
+
+
 @router.put("/alerts/{alert_id}/acknowledge")
 async def acknowledge_alert(alert_id: int):
     db = await get_db()

@@ -124,7 +124,7 @@ async def handle_sweep(db, data):
             )
             events_updated.append(ev["event"])
 
-    # Discovered events (include in response only)
+    # Discovered events — store in change_log details for review
     discovered_events = data.get("events", {}).get("discovered", [])
 
     # Update last_sweep_at
@@ -151,11 +151,20 @@ async def handle_sweep(db, data):
         parts.append(f"Events occurred: {', '.join(events_updated)}.")
     summary = " ".join(parts)
 
+    # Enrich details with pending discoveries for UI review
+    details_for_log = dict(data)
+    if discovered_events:
+        pending = {
+            "pending_events": [e for e in discovered_events if e.get("add_to_tracked_events")],
+            "suggested_indicators": [e for e in discovered_events if e.get("suggested_indicator")],
+        }
+        details_for_log["pending_discoveries"] = pending
+
     # Write change log
     await db.execute(
         """INSERT INTO change_log (company_id, action, summary, details, before_state)
            VALUES (?, ?, ?, ?, ?)""",
-        (company_id, "sweep", summary, json.dumps(data), json.dumps(before_state)),
+        (company_id, "sweep", summary, json.dumps(details_for_log), json.dumps(before_state)),
     )
     await db.commit()
 

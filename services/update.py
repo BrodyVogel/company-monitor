@@ -37,7 +37,16 @@ async def handle_update(db, data):
         "key_events": events_snap,
     }
 
-    changes_made = []
+    summary_parts = []
+    company_changes_applied = []
+    scenarios_replaced = 0
+    indicators_added = 0
+    indicators_removed = 0
+    indicators_modified = 0
+    indicators_skipped = []
+    indicators_unmatched = []
+    key_events_added = 0
+    key_events_removed = 0
 
     # Apply company_changes
     if data.get("company_changes"):
@@ -52,18 +61,29 @@ async def handle_update(db, data):
             if key in cc:
                 sets.append(f"{key} = ?")
                 vals.append(cc[key])
+                company_changes_applied.append(key)
         if sets:
             sets.append("updated_at = datetime('now')")
             vals.append(company_id)
             await db.execute(
                 f"UPDATE companies SET {', '.join(sets)} WHERE id = ?", vals
             )
-            changes_made.append(f"Updated company fields: {', '.join(cc.keys())}")
+            # Build readable change descriptions
+            for key in company_changes_applied:
+                old_val = company.get(key)
+                new_val = cc[key]
+                if key == "current_rating":
+                    summary_parts.append(f"Rating: {old_val} → {new_val}")
+                elif key == "blended_price_target":
+                    summary_parts.append(f"PT: ${old_val} → ${new_val}")
+                elif key == "current_price":
+                    summary_parts.append(f"Price: ${old_val} → ${new_val}")
 
     # Replace scenarios
     if data.get("scenarios_replace") is not None:
         await db.execute("DELETE FROM scenarios WHERE company_id = ?", (company_id,))
-        for i, s in enumerate(data["scenarios_replace"]):
+        new_scenarios = data["scenarios_replace"]
+        for i, s in enumerate(new_scenarios):
             await db.execute(
                 """INSERT INTO scenarios (company_id, name, raw_weight, effective_weight,
                    implied_price, summary, sort_order)
@@ -74,10 +94,29 @@ async def handle_update(db, data):
                     s.get("summary"), i,
                 ),
             )
-        changes_made.append(f"Replaced scenarios ({len(data['scenarios_replace'])} new)")
+        scenarios_replaced = len(new_scenarios)
+        summary_parts.append(f"Scenarios replaced ({scenarios_replaced} new)")
 
-    # Add indicators
+        # Recalculate blended_price_target from the new scenarios
+        bpt = sum(
+            (s.get("effective_weight") or 0) * s["implied_price"]
+            for s in new_scenarios
+        )
+        await db.execute(
+            "UPDATE companies SET blended_price_target = ?, updated_at = datetime('now') WHERE id = ?",
+            (bpt, company_id),
+        )
+
+    # Add indicators (skip duplicates by case-insensitive name)
     for ind in data.get("indicators_add", []):
+        ind_name = ind["name"].strip()
+        existing = await db.execute_fetchall(
+            "SELECT id FROM indicators WHERE company_id = ? AND LOWER(TRIM(name)) = LOWER(?)",
+            (company_id, ind_name),
+        )
+        if existing:
+            indicators_skipped.append(ind_name)
+            continue
         await db.execute(
             """INSERT INTO indicators (company_id, name, current_value, current_value_numeric,
                bear_threshold, bull_threshold, check_frequency, data_source)
@@ -88,46 +127,63 @@ async def handle_update(db, data):
                 ind.get("bull_threshold"), ind["check_frequency"], ind["data_source"],
             ),
         )
-        changes_made.append(f"Added indicator: {ind['name']}")
+        indicators_added += 1
 
-    # Remove indicators
+    # Remove indicators (track unmatched)
     for ind in data.get("indicators_remove", []):
         name = ind if isinstance(ind, str) else ind.get("name", "")
+        name_stripped = name.strip()
+        existing = await db.execute_fetchall(
+            "SELECT id FROM indicators WHERE company_id = ? AND LOWER(TRIM(name)) = LOWER(?)",
+            (company_id, name_stripped),
+        )
+        if not existing:
+            indicators_unmatched.append(name_stripped)
+            continue
         await db.execute(
             "DELETE FROM indicators WHERE company_id = ? AND LOWER(TRIM(name)) = LOWER(?)",
-            (company_id, name.strip()),
+            (company_id, name_stripped),
         )
-        changes_made.append(f"Removed indicator: {name}")
+        indicators_removed += 1
 
-    # Modify indicators
+    # Modify indicators (track unmatched)
     for ind in data.get("indicators_modify", []):
         name = ind["name"].strip()
         db_ind = await db.execute_fetchall(
             "SELECT id FROM indicators WHERE company_id = ? AND LOWER(TRIM(name)) = LOWER(?)",
             (company_id, name),
         )
-        if db_ind:
-            ind_id = db_ind[0]["id"]
-            updatable = [
-                "current_value", "current_value_numeric", "bear_threshold",
-                "bull_threshold", "check_frequency", "data_source", "status",
-            ]
-            sets = []
-            vals = []
-            for key in updatable:
-                if key in ind:
-                    sets.append(f"{key} = ?")
-                    vals.append(ind[key])
-            if sets:
-                sets.append("updated_at = datetime('now')")
-                vals.append(ind_id)
-                await db.execute(
-                    f"UPDATE indicators SET {', '.join(sets)} WHERE id = ?", vals
-                )
-            changes_made.append(f"Modified indicator: {name}")
+        if not db_ind:
+            indicators_unmatched.append(name)
+            continue
+        ind_id = db_ind[0]["id"]
+        updatable = [
+            "current_value", "current_value_numeric", "bear_threshold",
+            "bull_threshold", "check_frequency", "data_source", "status",
+        ]
+        sets = []
+        vals = []
+        for key in updatable:
+            if key in ind:
+                sets.append(f"{key} = ?")
+                vals.append(ind[key])
+        if sets:
+            sets.append("updated_at = datetime('now')")
+            vals.append(ind_id)
+            await db.execute(
+                f"UPDATE indicators SET {', '.join(sets)} WHERE id = ?", vals
+            )
+        indicators_modified += 1
 
-    # Add key events
+    # Add key events (skip duplicates by case-insensitive name)
     for ev in data.get("key_events_add", []):
+        ev_name = ev["event"].strip()
+        existing = await db.execute_fetchall(
+            "SELECT id FROM key_events WHERE company_id = ? AND LOWER(TRIM(event)) = LOWER(?)",
+            (company_id, ev_name),
+        )
+        if existing:
+            continue
         indicators_affected = ev.get("indicators_affected")
         if isinstance(indicators_affected, list):
             indicators_affected = json.dumps(indicators_affected)
@@ -140,16 +196,17 @@ async def handle_update(db, data):
                 ev.get("why_it_matters"), indicators_affected,
             ),
         )
-        changes_made.append(f"Added event: {ev['event']}")
+        key_events_added += 1
 
     # Remove key events
     for ev in data.get("key_events_remove", []):
         name = ev if isinstance(ev, str) else ev.get("event", "")
+        name_stripped = name.strip()
         await db.execute(
             "DELETE FROM key_events WHERE company_id = ? AND LOWER(TRIM(event)) = LOWER(?)",
-            (company_id, name.strip()),
+            (company_id, name_stripped),
         )
-        changes_made.append(f"Removed event: {name}")
+        key_events_removed += 1
 
     # Update materials_as_of
     update_date = data.get("update_date")
@@ -159,27 +216,24 @@ async def handle_update(db, data):
             (update_date, company_id),
         )
 
-    # Recalculate blended_price_target
-    scenario_rows = await db.execute_fetchall(
-        "SELECT effective_weight, implied_price FROM scenarios WHERE company_id = ?",
-        (company_id,),
-    )
-    if scenario_rows:
-        bpt = sum(
-            (r["effective_weight"] or 0) * r["implied_price"] for r in scenario_rows
-        )
-        await db.execute(
-            "UPDATE companies SET blended_price_target = ?, updated_at = datetime('now') WHERE id = ?",
-            (bpt, company_id),
-        )
-
     await db.commit()
 
     # Run alert engine
     await run_alerts(db, company_id)
 
     # Build summary
-    summary = f"Update for {ticker}. " + " ".join(changes_made) if changes_made else f"Update for {ticker}. No changes applied."
+    if indicators_added:
+        summary_parts.append(f"{indicators_added} indicator added")
+    if indicators_removed:
+        summary_parts.append(f"{indicators_removed} removed")
+    if indicators_modified:
+        summary_parts.append(f"{indicators_modified} modified")
+    if key_events_added:
+        summary_parts.append(f"{key_events_added} event added")
+    if key_events_removed:
+        summary_parts.append(f"{key_events_removed} event removed")
+
+    summary = f"Materials updated. " + ". ".join(summary_parts) + "." if summary_parts else f"Update for {ticker}. No changes applied."
 
     # Write change log
     await db.execute(
@@ -193,5 +247,13 @@ async def handle_update(db, data):
         "status": "ok",
         "action": "update",
         "summary": summary,
-        "changes": changes_made,
+        "company_changes_applied": company_changes_applied,
+        "scenarios_replaced": scenarios_replaced,
+        "indicators_added": indicators_added,
+        "indicators_removed": indicators_removed,
+        "indicators_modified": indicators_modified,
+        "indicators_skipped": indicators_skipped,
+        "indicators_unmatched": indicators_unmatched,
+        "key_events_added": key_events_added,
+        "key_events_removed": key_events_removed,
     }
