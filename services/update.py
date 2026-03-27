@@ -1,17 +1,16 @@
 import json
+from datetime import date
+from database import find_company_by_ticker
 from services.alert_engine import run_alerts
 
 
 async def handle_update(db, data):
     ticker = data["ticker"]
 
-    # Look up company
-    rows = await db.execute_fetchall(
-        "SELECT * FROM companies WHERE ticker = ?", (ticker,)
-    )
-    if not rows:
+    # Look up company (fuzzy matching)
+    company = await find_company_by_ticker(db, ticker)
+    if not company:
         return {"error": f"Company with ticker {ticker} not found."}
-    company = dict(rows[0])
     company_id = company["id"]
 
     # Snapshot before_state
@@ -220,6 +219,49 @@ async def handle_update(db, data):
         await db.execute(
             "UPDATE companies SET materials_as_of = ?, updated_at = datetime('now') WHERE id = ?",
             (update_date, company_id),
+        )
+
+    # Recommendation history tracking
+    cc = data.get("company_changes", {})
+    old_rating = company.get("current_rating")
+    new_rating = cc.get("current_rating")
+    rating_changed = new_rating is not None and new_rating != old_rating
+    effective_date = update_date or date.today().isoformat()
+
+    # Fetch updated company state for current values
+    updated_company = await db.execute_fetchall(
+        "SELECT * FROM companies WHERE id = ?", (company_id,)
+    )
+    updated_company = dict(updated_company[0]) if updated_company else company
+
+    if rating_changed:
+        # Close the current open entry
+        await db.execute(
+            """UPDATE recommendation_history
+               SET ended_at = ?, price_at_end = ?
+               WHERE company_id = ? AND ended_at IS NULL""",
+            (effective_date, updated_company["current_price"], company_id),
+        )
+        # Open a new entry
+        await db.execute(
+            """INSERT INTO recommendation_history
+               (company_id, rating, price_at_start, target_at_start, started_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                company_id,
+                new_rating,
+                updated_company["current_price"],
+                updated_company["blended_price_target"],
+                effective_date,
+            ),
+        )
+    elif "blended_price_target" in cc:
+        # Target changed but rating didn't — update current open entry
+        await db.execute(
+            """UPDATE recommendation_history
+               SET target_at_start = ?
+               WHERE company_id = ? AND ended_at IS NULL""",
+            (updated_company["blended_price_target"], company_id),
         )
 
     await db.commit()

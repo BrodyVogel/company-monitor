@@ -311,7 +311,39 @@ async def run_alerts(db, company_id):
                     (company_id, title),
                 )
 
-    # 5. Staleness checks — create or clear
+    # 5. Overdue key events
+    key_events = await db.execute_fetchall(
+        "SELECT * FROM key_events WHERE company_id = ? AND occurred = 0",
+        (company_id,),
+    )
+    today_str = now.strftime("%Y-%m-%d")
+    for ev in key_events:
+        ev = dict(ev)
+        if not ev.get("expected_date"):
+            continue
+        if ev["expected_date"] < today_str:
+            title = f"Overdue event: {ev['event']}"
+            await _upsert_alert(
+                db,
+                company_id,
+                indicator_id=None,
+                tier="watch",
+                title=title,
+                description=f"Expected {ev['expected_date']} but not yet marked as occurred. Verify status.",
+            )
+
+    # Deactivate overdue alerts for events that have since occurred
+    occurred_events = await db.execute_fetchall(
+        "SELECT event FROM key_events WHERE company_id = ? AND occurred = 1",
+        (company_id,),
+    )
+    for ev in occurred_events:
+        await db.execute(
+            "UPDATE alerts SET is_active = 0 WHERE company_id = ? AND title = ? AND is_active = 1",
+            (company_id, f"Overdue event: {ev['event']}"),
+        )
+
+    # 6. Staleness checks — create or clear
     now = datetime.utcnow()
 
     sweep_overdue_title = f"Sweep overdue for {company['name']}"

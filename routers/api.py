@@ -1,6 +1,6 @@
 import json
 from fastapi import APIRouter, File, UploadFile, Request, HTTPException
-from database import get_db
+from database import get_db, find_company_by_ticker
 from services.import_handler import route_import
 from services.rating_logic import compute_suggested_rating, compute_upside
 from services.undo import handle_undo
@@ -57,12 +57,9 @@ async def list_companies():
 async def get_company(ticker: str):
     db = await get_db()
     try:
-        rows = await db.execute_fetchall(
-            "SELECT * FROM companies WHERE ticker = ?", (ticker,)
-        )
-        if not rows:
+        company = await find_company_by_ticker(db, ticker)
+        if not company:
             raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
-        company = dict(rows[0])
         company_id = company["id"]
 
         company["suggested_rating"] = compute_suggested_rating(
@@ -119,6 +116,21 @@ async def get_company(ticker: str):
             )
         ]
 
+        # Recommendation history
+        rec_history = [
+            dict(r) for r in await db.execute_fetchall(
+                "SELECT * FROM recommendation_history WHERE company_id = ? ORDER BY id DESC",
+                (company_id,),
+            )
+        ]
+        # Compute return percentages
+        for rh in rec_history:
+            exit_price = rh["price_at_end"] if rh["ended_at"] else company["current_price"]
+            if rh["price_at_start"] and exit_price:
+                rh["return_pct"] = round((exit_price - rh["price_at_start"]) / rh["price_at_start"] * 100, 2)
+            else:
+                rh["return_pct"] = None
+
         return {
             "company": company,
             "scenarios": scenarios,
@@ -126,6 +138,7 @@ async def get_company(ticker: str):
             "key_events": key_events,
             "alerts": alerts,
             "change_log": change_log,
+            "recommendation_history": rec_history,
         }
     finally:
         await db.close()
@@ -151,16 +164,39 @@ async def get_indicator_readings(indicator_id: int):
         await db.close()
 
 
+@router.get("/companies/{ticker}/recommendations")
+async def get_recommendations(ticker: str):
+    db = await get_db()
+    try:
+        company = await find_company_by_ticker(db, ticker)
+        if not company:
+            raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
+
+        rec_history = [
+            dict(r) for r in await db.execute_fetchall(
+                "SELECT * FROM recommendation_history WHERE company_id = ? ORDER BY id DESC",
+                (company["id"],),
+            )
+        ]
+        for rh in rec_history:
+            exit_price = rh["price_at_end"] if rh["ended_at"] else company["current_price"]
+            if rh["price_at_start"] and exit_price:
+                rh["return_pct"] = round((exit_price - rh["price_at_start"]) / rh["price_at_start"] * 100, 2)
+            else:
+                rh["return_pct"] = None
+        return rec_history
+    finally:
+        await db.close()
+
+
 @router.delete("/companies/{ticker}")
 async def delete_company(ticker: str):
     db = await get_db()
     try:
-        rows = await db.execute_fetchall(
-            "SELECT id FROM companies WHERE ticker = ?", (ticker,)
-        )
-        if not rows:
+        company = await find_company_by_ticker(db, ticker)
+        if not company:
             raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
-        company_id = rows[0]["id"]
+        company_id = company["id"]
         await db.execute("DELETE FROM companies WHERE id = ?", (company_id,))
         await db.commit()
         return {"status": "ok", "deleted": ticker}
@@ -173,12 +209,10 @@ async def create_key_event(ticker: str, request: Request):
     data = await request.json()
     db = await get_db()
     try:
-        rows = await db.execute_fetchall(
-            "SELECT id FROM companies WHERE ticker = ?", (ticker,)
-        )
-        if not rows:
+        company = await find_company_by_ticker(db, ticker)
+        if not company:
             raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
-        company_id = rows[0]["id"]
+        company_id = company["id"]
         indicators_affected = data.get("indicators_affected")
         if isinstance(indicators_affected, list):
             indicators_affected = json.dumps(indicators_affected)
@@ -202,23 +236,37 @@ async def create_indicator(ticker: str, request: Request):
     data = await request.json()
     db = await get_db()
     try:
-        rows = await db.execute_fetchall(
-            "SELECT id FROM companies WHERE ticker = ?", (ticker,)
-        )
-        if not rows:
+        company = await find_company_by_ticker(db, ticker)
+        if not company:
             raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
-        company_id = rows[0]["id"]
-        await db.execute(
+        company_id = company["id"]
+        status = "action_required" if data.get("material_change") else "all_clear"
+        cursor = await db.execute(
             """INSERT INTO indicators (company_id, name, current_value, current_value_numeric,
-               bear_threshold, bull_threshold, check_frequency, data_source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               bear_threshold, bull_threshold, check_frequency, data_source, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 company_id, data["name"], data.get("current_value"),
                 data.get("current_value_numeric"), data.get("bear_threshold"),
                 data.get("bull_threshold"), data.get("check_frequency", "Weekly"),
-                data.get("data_source", ""),
+                data.get("data_source", ""), status,
             ),
         )
+        indicator_id = cursor.lastrowid
+
+        # If material change, create an alert
+        if data.get("material_change"):
+            await db.execute(
+                """INSERT INTO alerts (company_id, indicator_id, tier, title, description, change_rationale)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    company_id, indicator_id, "action_required",
+                    f"Material change: {data['name']}",
+                    f"Indicator '{data['name']}' flagged as material change.",
+                    data.get("change_rationale"),
+                ),
+            )
+
         await db.commit()
         return {"status": "ok", "indicator": data["name"]}
     finally:
@@ -261,12 +309,10 @@ async def undo_change(change_log_id: int):
 async def get_change_log(ticker: str):
     db = await get_db()
     try:
-        rows = await db.execute_fetchall(
-            "SELECT id FROM companies WHERE ticker = ?", (ticker,)
-        )
-        if not rows:
+        company = await find_company_by_ticker(db, ticker)
+        if not company:
             raise HTTPException(status_code=404, detail=f"Company {ticker} not found.")
-        company_id = rows[0]["id"]
+        company_id = company["id"]
         log = [
             dict(r) for r in await db.execute_fetchall(
                 "SELECT * FROM change_log WHERE company_id = ? ORDER BY id DESC",
