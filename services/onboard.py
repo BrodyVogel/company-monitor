@@ -94,6 +94,21 @@ async def handle_onboard(db, data):
             (company_id, company_data["current_price"], "onboard", materials_as_of),
         )
 
+    # Insert first recommendation_history entry
+    if company_data.get("current_price") is not None:
+        await db.execute(
+            """INSERT INTO recommendation_history
+               (company_id, rating, price_at_start, target_at_start, started_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                company_id,
+                company_data["current_rating"],
+                company_data["current_price"],
+                company_data["blended_price_target"],
+                materials_as_of,
+            ),
+        )
+
     await db.commit()
 
     # Run alert engine

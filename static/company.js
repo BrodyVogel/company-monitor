@@ -95,6 +95,7 @@ async function loadCompany() {
 function renderAll() {
     renderHeader();
     renderPriceCards();
+    renderRecommendationHistory();
     renderAlerts();
     renderScenarios();
     renderIndicators();
@@ -156,6 +157,75 @@ function renderPriceCards() {
     `;
 }
 
+// ── Recommendation History ──
+function renderRecommendationHistory() {
+    const recs = DATA.recommendation_history;
+    const section = document.getElementById("recommendation-history-section");
+    if (!recs || recs.length === 0) { section.classList.add("hidden"); return; }
+    section.classList.remove("hidden");
+
+    const c = DATA.company;
+
+    let rows = recs.map(rh => {
+        const startDate = formatShortDate(rh.started_at);
+        const endDate = rh.ended_at ? formatShortDate(rh.ended_at) : "current";
+        const period = `${startDate} – ${endDate}`;
+
+        const exitPrice = rh.ended_at
+            ? formatPrice(rh.price_at_end, c.currency)
+            : formatPrice(c.current_price, c.currency) + ' <span class="text-xs text-gray-400">(live)</span>';
+
+        const returnPct = rh.return_pct;
+        const returnColor = returnPct != null ? (returnPct >= 0 ? "text-green-600" : "text-red-600") : "";
+        const returnText = returnPct != null ? (returnPct >= 0 ? "+" : "") + returnPct.toFixed(1) + "%" : "\u2014";
+
+        // Duration in days
+        const start = new Date(rh.started_at);
+        const end = rh.ended_at ? new Date(rh.ended_at) : new Date();
+        const duration = Math.max(0, Math.floor((end - start) / (1000 * 60 * 60 * 24)));
+
+        return `<tr class="hover:bg-gray-50">
+            <td class="px-4 py-2 text-sm text-gray-700">${period}</td>
+            <td class="px-4 py-2"><span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${ratingBadgeClass(rh.rating)}">${escapeHtml(rh.rating)}</span></td>
+            <td class="px-4 py-2 text-sm text-gray-700">${formatPrice(rh.price_at_start, c.currency)}</td>
+            <td class="px-4 py-2 text-sm text-gray-700">${exitPrice}</td>
+            <td class="px-4 py-2 text-sm font-medium ${returnColor}">${returnText}</td>
+            <td class="px-4 py-2 text-sm text-gray-700">${duration}d</td>
+        </tr>`;
+    }).join("");
+
+    // Total return since initiation
+    const sortedByStart = [...recs].sort((a, b) => a.id - b.id);
+    const firstEntry = sortedByStart[0];
+    let totalReturnHtml = "";
+    if (firstEntry && firstEntry.price_at_start && c.current_price) {
+        const totalReturn = ((c.current_price - firstEntry.price_at_start) / firstEntry.price_at_start * 100).toFixed(1);
+        const totalColor = totalReturn >= 0 ? "text-green-600" : "text-red-600";
+        const totalSign = totalReturn >= 0 ? "+" : "";
+        const initDate = formatShortDate(firstEntry.started_at);
+        totalReturnHtml = `<p class="text-sm text-gray-600 mt-3">Total return since initiation (${initDate}): <span class="font-medium ${totalColor}">${totalSign}${totalReturn}%</span></p>`;
+    }
+
+    section.innerHTML = `
+        <h2 class="text-lg font-semibold text-gray-900 mb-3">Recommendation History</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full bg-white rounded-lg border border-gray-200">
+                <thead>
+                    <tr class="border-b border-gray-200 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <th class="px-4 py-3">Period</th>
+                        <th class="px-4 py-3">Rating</th>
+                        <th class="px-4 py-3">Entry Price</th>
+                        <th class="px-4 py-3">Exit Price</th>
+                        <th class="px-4 py-3">Return</th>
+                        <th class="px-4 py-3">Duration</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">${rows}</tbody>
+            </table>
+        </div>
+        ${totalReturnHtml}`;
+}
+
 // ── Alerts ──
 function renderAlerts() {
     const alerts = DATA.alerts;
@@ -211,7 +281,6 @@ function renderScenarios() {
     let rows = scenarios.map(s => `
         <tr class="hover:bg-gray-50">
             <td class="px-4 py-2 text-sm font-medium text-gray-900">${escapeHtml(s.name)}</td>
-            <td class="px-4 py-2 text-sm text-gray-700">${s.raw_weight != null ? (s.raw_weight * 100).toFixed(0) + "%" : "\u2014"}</td>
             <td class="px-4 py-2 text-sm text-gray-700">${s.effective_weight != null ? (s.effective_weight * 100).toFixed(0) + "%" : "\u2014"}</td>
             <td class="px-4 py-2 text-sm text-gray-700">${formatPrice(s.implied_price, c.currency)}</td>
             <td class="px-4 py-2 text-sm text-gray-600">${escapeHtml(s.summary)}</td>
@@ -224,8 +293,7 @@ function renderScenarios() {
                 <thead>
                     <tr class="border-b border-gray-200 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         <th class="px-4 py-3">Scenario</th>
-                        <th class="px-4 py-3">Raw Weight</th>
-                        <th class="px-4 py-3">Effective Weight</th>
+                        <th class="px-4 py-3">Weight</th>
                         <th class="px-4 py-3">Implied Price</th>
                         <th class="px-4 py-3">Summary</th>
                     </tr>
@@ -418,13 +486,28 @@ function renderDiscoveries() {
         if (!itemMap.has(key)) { itemMap.set(key, item); allItems.push(item); }
     }
 
-    if (allItems.length === 0) { section.classList.add("hidden"); return; }
+    // Filter out items that have already been added as key events or indicators
+    const existingEventNames = new Set((DATA.key_events || []).map(e => (e.event || "").toLowerCase().trim()));
+    const existingIndicatorNames = new Set((DATA.indicators || []).map(ind => (ind.name || "").toLowerCase().trim()));
+    const filteredItems = allItems.filter(item => {
+        if (item.add_to_tracked_events) {
+            const evName = (item.add_to_tracked_events.event || item.add_to_tracked_events.name || "").toLowerCase().trim();
+            if (existingEventNames.has(evName)) return false;
+        }
+        if (item.suggested_indicator) {
+            const indName = (item.suggested_indicator.name || "").toLowerCase().trim();
+            if (existingIndicatorNames.has(indName)) return false;
+        }
+        return true;
+    });
+
+    if (filteredItems.length === 0) { section.classList.add("hidden"); return; }
     section.classList.remove("hidden");
 
     let html = '<h2 class="text-lg font-semibold text-gray-900 mb-3">Pending Discoveries</h2>';
 
-    for (let i = 0; i < allItems.length; i++) {
-        const item = allItems[i];
+    for (let i = 0; i < filteredItems.length; i++) {
+        const item = filteredItems[i];
         const eventName = escapeHtml(item.event || item.name || "Unknown");
         const date = item.date ? formatFullDate(item.date) : "\u2014";
         const relevance = escapeHtml(item.relevance || "");
@@ -439,7 +522,9 @@ function renderDiscoveries() {
         }
         if (item.suggested_indicator) {
             const indData = item.suggested_indicator;
-            buttons += `<button onclick='addDiscoveredIndicator(${JSON.stringify(indData).replace(/'/g, "&#39;")})' class="bg-green-600 text-white text-xs px-3 py-1 rounded hover:bg-green-700">Add Indicator</button>`;
+            const mc = !!item.material_change;
+            const cr = (item.change_rationale || item.relevance || "").replace(/'/g, "&#39;").replace(/"/g, "&quot;");
+            buttons += `<button onclick='addDiscoveredIndicator(${JSON.stringify(indData).replace(/'/g, "&#39;")}, ${mc}, "${cr}")' class="bg-green-600 text-white text-xs px-3 py-1 rounded hover:bg-green-700">Add Indicator</button>`;
         }
 
         html += `
@@ -483,7 +568,7 @@ async function addDiscoveredEvent(evData) {
     } catch { showToast("Failed to add event", "error"); }
 }
 
-async function addDiscoveredIndicator(indData) {
+async function addDiscoveredIndicator(indData, materialChange, changeRationale) {
     try {
         const body = {
             name: indData.name,
@@ -493,6 +578,10 @@ async function addDiscoveredIndicator(indData) {
             check_frequency: indData.check_frequency || "Weekly",
             data_source: indData.data_source || "",
         };
+        if (materialChange) {
+            body.material_change = true;
+            body.change_rationale = changeRationale || "";
+        }
         const res = await fetch(`/api/companies/${encodeURIComponent(TICKER)}/indicators`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },

@@ -226,6 +226,22 @@ async def handle_undo(db, change_log_id):
                     ),
                 )
 
+        # Undo recommendation_history changes from this update
+        details = json.loads(entry["details"]) if entry["details"] else {}
+        update_date = details.get("update_date", entry["created_at"])
+        # Delete any recommendation_history entry started on the update_date
+        await db.execute(
+            "DELETE FROM recommendation_history WHERE company_id = ? AND started_at = ?",
+            (company_id, update_date),
+        )
+        # Reopen the previous entry by clearing ended_at and price_at_end
+        await db.execute(
+            """UPDATE recommendation_history
+               SET ended_at = NULL, price_at_end = NULL
+               WHERE company_id = ? AND ended_at = ?""",
+            (company_id, update_date),
+        )
+
         # Handle key_events: delete added, re-create removed
         before_events = before_state.get("key_events", [])
         before_event_names = {ev["event"].strip().lower(): ev for ev in before_events}

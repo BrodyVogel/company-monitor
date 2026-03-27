@@ -1,4 +1,5 @@
 import json
+from database import find_company_by_ticker
 from services.alert_engine import run_alerts
 
 
@@ -6,13 +7,10 @@ async def handle_sweep(db, data):
     ticker = data["ticker"]
     sweep_date = data["sweep_date"]
 
-    # Look up company
-    rows = await db.execute_fetchall(
-        "SELECT * FROM companies WHERE ticker = ?", (ticker,)
-    )
-    if not rows:
+    # Look up company (fuzzy matching)
+    company = await find_company_by_ticker(db, ticker)
+    if not company:
         return {"error": f"Company with ticker {ticker} not found."}
-    company = dict(rows[0])
     company_id = company["id"]
 
     # Snapshot before_state
